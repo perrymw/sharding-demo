@@ -39,6 +39,12 @@ class ShardHandler(object):
     def _reset_char_position(self):
         self.last_char_position = 0
 
+    def get_shard_ids(self):
+        return sorted([key for key in self.mapping.keys() if '-' not in key])
+
+    def get_replication_ids(self):
+        return sorted([key for key in self.mapping.keys() if '-' in key])
+
     def build_shards(self, count: int, data: str = None) -> [str, None]:
         """Initialize our miniature databases from a clean mapfile. Cannot
         be called if there is an existing mapping -- must use add_shard() or
@@ -53,6 +59,42 @@ class ShardHandler(object):
 
         self.write_map()
 
+    def _write_shard_mapping(self, num: str, data: str, replication=False):
+        """Write the requested data to the mapfile. The optional `replication`
+        flag allows overriding the start and end information with the shard
+        being replicated."""
+        if replication:
+            parent_shard = self.mapping.get(num[:num.index('-')])
+            self.mapping.update(
+                {
+                    num: {
+                        'start': parent_shard['start'],
+                        'end': parent_shard['end']
+                    }
+                }
+            )
+        else:
+            if int(num) == 0:
+                # We reset it here in case we perform multiple write operations
+                # within the same instantiation of the class. The char position
+                # is used to power the index creation.
+                self._reset_char_position()
+
+            self.mapping.update(
+                {
+                    str(num): {
+                        'start': (
+                            self.last_char_position if
+                            self.last_char_position == 0 else
+                            self.last_char_position + 1
+                        ),
+                        'end': self.last_char_position + len(data)
+                    }
+                }
+            )
+
+            self.last_char_position += len(data)
+
     def _write_shard(self, num: int, data: str) -> None:
         """Write an individual database shard to disk and add it to the
         mapping."""
@@ -60,27 +102,7 @@ class ShardHandler(object):
             os.mkdir("data")
         with open(f"data/{num}.txt", 'w') as s:
             s.write(data)
-
-        if num == 0:
-            # We reset it here in case we perform multiple write operations
-            # within the same instantiation of the class. The char position
-            # is used to power the index creation.
-            self._reset_char_position()
-
-        self.mapping.update(
-            {
-                str(num): {
-                    'start': (
-                        self.last_char_position if
-                            self.last_char_position == 0 else
-                            self.last_char_position + 1
-                        ),
-                    'end': self.last_char_position + len(data)
-                }
-            }
-        )
-
-        self.last_char_position += len(data)
+        self._write_shard_mapping(str(num), data)
 
     def _generate_sharded_data(self, count: int, data: str) -> List[str]:
         """Split the data into as many pieces as needed."""
@@ -97,7 +119,7 @@ class ShardHandler(object):
         """Grab all the shards, pull all the data, and then concatenate it."""
         result = list()
 
-        for db in self.mapping.keys():
+        for db in self.get_shard_ids():
             with open(f'data/{db}.txt', 'r') as f:
                 result.append(f.read())
         return ''.join(result)
@@ -106,7 +128,7 @@ class ShardHandler(object):
         """Add a new shard to the existing pool and rebalance the data."""
         self.mapping = self.load_map()
         data = self.load_data_from_shards()
-        keys = [int(z) for z in list(self.mapping.keys())]
+        keys = [int(z) for z in self.get_shard_ids()]
         keys.sort()
         # why 2? Because we have to compensate for zero indexing
         new_shard_num = max(keys) + 2
@@ -168,8 +190,8 @@ class ShardHandler(object):
 
     def sync_replication(self) -> None:
         """Verify that all replications are equal to their primaries and that
-         any missing primaries are appropriately recreated from their
-         replications."""
+        any missing primaries are appropriately recreated from their
+        replications."""
         pass
 
     def get_shard_data(self, shardnum=None) -> [str, Dict]:
@@ -178,7 +200,7 @@ class ShardHandler(object):
             return self.get_all_shard_data()
         data = self.mapping.get(shardnum)
         if not data:
-            return f"Invalid shard ID. Valid shard IDs: {self.mapping.keys()}"
+            return f"Invalid shard ID. Valid shard IDs: {self.get_shard_ids()}"
         return f"Shard {shardnum}: {data}"
 
     def get_all_shard_data(self) -> Dict:
